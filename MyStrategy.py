@@ -438,7 +438,7 @@ class MyStrategy:
                     strafe_vec = dirToTarget.rotate(math.pi * 90 * sign)
                     targetPoint = mePoint + ((targetPoint - mePoint).normalize() + strafe_vec).normalize()
 
-                move.min_cast_distance = distance
+                move.min_cast_distance = max(0, distance - 50.0) if obstacle else 0.0 #50 to be sure, because things move
 
                 if distance <= me.cast_range:
                     move.action = ActionType.MAGIC_MISSILE
