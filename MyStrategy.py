@@ -8,9 +8,14 @@ from model.Game import Game
 from model.Move import Move
 from model.Wizard import Wizard
 from model.World import World
+from model.LaneType import LaneType
+from model.Bonus import Bonus
+from model.BonusType import BonusType
+from model.Tree import Tree
 
 WAYPOINT_RADIUS = 100.00
 LOW_HP_FACTOR = 0.25
+MAP_SIZE = 4000
 
 class Vector(object):
     def __init__(self, *args):
@@ -47,7 +52,7 @@ class Vector(object):
             return self._rotate2D(*args)
         elif len(args)==1:
             matrix = args[0]
-            if not all(len(row) == len(v) for row in matrix) or not len(matrix)==len(self):
+            if not all(len(row) == len(matrix) for row in matrix) or not len(matrix)==len(self):
                 raise ValueError("Rotation matrix must be square and same dimensions as vector")
             return self.matrix_mult(matrix)
         
@@ -142,25 +147,44 @@ class Vector(object):
     def __repr__(self):
         return str(self.values)
 
-BUILDING_DISTANCE_FACTOR = 1.2
+BUILDING_DISTANCE_FACTOR = 1.0
 WIZARD_DISTANCE_FACTOR = 0.7
 MINION_DISTANCE_FACTOR = 1.0
 CRATE_POINTS = (Vector(1200, 1200), Vector(2800, 2800))
 
+def closest_point_on_seg(a : Vector, b : Vector, pt : Vector):
+    seg_v = b - a
+    pt_v = pt - a
+    seg_len = seg_v.norm()
+    seg_v_unit = seg_v.normalize()
+	
+    proj = pt_v * seg_v_unit
+    if proj <= 0:
+        return a
+    if proj >= seg_len:
+        return b
+	
+    return a + (seg_v_unit * proj) 
+
+def is_segment_circle_intersect(a : Vector, b : Vector, circle_center : Vector, circle_radius : float):
+    p = closest_point_on_seg(a, b, circle_center)
+    return (p - circle_center).norm() < circle_radius
 
 def get_targets(world: World):
     for b in world.buildings:
         yield (b, BUILDING_DISTANCE_FACTOR)
     for w in world.wizards:
-        yield (w, WIZARD_DISTANCE_FACTOR)
+        if not w.me:
+            yield (w, WIZARD_DISTANCE_FACTOR)
     for m in world.minions:
         yield (m, MINION_DISTANCE_FACTOR)
 
-def get_nearest_target(me: Wizard, world: World):
+def get_nearest_target(me: Wizard, world: World, targetPoint):
     # tree special check
     for t in world.trees:
         distance = me.get_distance_to_unit(t)
-        if distance < (me.radius + t.radius) * 1.1:
+        angle = abs(me.get_angle_to(targetPoint[0], targetPoint[1]))
+        if distance < (me.radius + t.radius) * 1.2 and angle < math.pi * 0.25:
             return t
 
     nearest_target = None
@@ -178,11 +202,11 @@ def get_nearest_target(me: Wizard, world: World):
             nearest_target_distance = distance
     return nearest_target
 
-def get_nearest_future_crate_and_dist(me: Wizard):
+def get_nearest_and_dist(me: Wizard, points):
     nearest_target = None
     nearest_target_distance = sys.float_info.max
 
-    for c in CRATE_POINTS:
+    for c in points:
         # Нейтралов атакуем тоже если их хп меньше максимального - они стригеренны
         distance = me.get_distance_to(c[0], c[1])
         if distance < nearest_target_distance:
@@ -212,6 +236,7 @@ def get_next_waypoint(waypoints, me: Wizard, world: World, game: Game):
     Дополнительно проверяем, не находится ли волшебник достаточно близко к какой-либо из ключевых точек. Если это
     так, то мы сразу возвращаем следующую ключевую точку.
     """
+
     last_waypoint = waypoints[-1]
     for i, waypoint in enumerate(waypoints[:-1]):
         if waypoint.get_distance_to_unit(me) <= WAYPOINT_RADIUS:
@@ -223,9 +248,27 @@ def get_next_waypoint(waypoints, me: Wizard, world: World, game: Game):
     return last_waypoint
 
 
-def get_waypoints_by_id(id, game: Game):
+def get_lane(me: Wizard, game: Game):
+    if me.id in [1, 2, 6, 7]:
+        return LaneType.TOP
+    elif me.id in [3, 8]:
+        return LaneType.MIDDLE
+    else:
+        return LaneType.BOTTOM
+
+def get_lane_center_point(lane : LaneType):
+    if lane == LaneType.TOP:
+        return Vector(200.0, 200.0)
+    elif lane == LaneType.MIDDLE:
+        return Vector(2000.0, 2000.0)
+    else:
+        return Vector(MAP_SIZE - 200.0, MAP_SIZE - 200.0)
+    
+
+def get_waypoints(me: Wizard, game: Game):
     map_size = game.map_size
-    if id in [1, 2, 6, 7]:
+    lane = get_lane(me, game)
+    if lane == LaneType.TOP:
         # точки верхней линии
         return [
             Vector(100.0, map_size - 100.0),
@@ -240,7 +283,7 @@ def get_waypoints_by_id(id, game: Game):
             Vector(map_size * 0.75, 200.0),
             Vector(map_size - 200.0, 200.0)
         ]
-    elif id in [3, 8]:
+    elif lane == LaneType.MIDDLE:
         # точки средней линии
         return [
             Vector(100.0, map_size - 100.0),
@@ -267,6 +310,12 @@ def get_waypoints_by_id(id, game: Game):
 def lerp(a : float, b : float, t : float):
     return a + (b - a) * t
 
+def lerp_clamped(a : float, b : float, t : float):
+    return clamp(lerp(a, b, t), min(a, b), max(a,b))
+
+def clamp(x : float, v0 : float, v1 : float):
+    return max(min(x, v1), v0)
+
 class MyStrategy:
 
     def __init__(self):
@@ -276,13 +325,13 @@ class MyStrategy:
 
     def initialize(self, me: Wizard, game: Game):
         random.seed(game.random_seed)
-        self.waypoints = get_waypoints_by_id(me.id, game)
+        self.waypoints = get_waypoints(me, game)
         self.initialized = True
 
     def apply_move(self, target: Vector, lookAt: Vector, me: Wizard, world: World, game: Game, move: Move):
         lookAngle = me.get_angle_to(lookAt.x(), lookAt.y())
         move.turn = lookAngle
-
+        
         moveDir = target - Vector(me.x, me.y)
         moveDir = moveDir.normalize()
 
@@ -294,7 +343,7 @@ class MyStrategy:
         targets.extend(world.trees)
 
         REPULSE_RADIUS_FACTOR = 1.5
-        REPULSE_FACTOR = 1.0
+        REPULSE_DISTANCE = 30.0
         REPULSE_RANDOM = 0.1
 
         t = world.tick_index * 0.05
@@ -304,7 +353,7 @@ class MyStrategy:
             distance = me.get_distance_to_unit(target)
             radius = me.radius + target.radius
             if distance < radius * REPULSE_RADIUS_FACTOR:
-                factor = min(1.0, abs(REPULSE_FACTOR / (distance - radius)))
+                factor = lerp_clamped(1.1, 0.0, abs(distance - radius) / REPULSE_DISTANCE)
                 repulse = Vector(me.x - target.x, me.y - target.y).normalize()
                 moveDir = moveDir + (repulse + random_repulse).normalize() * factor
                 moveDir = moveDir.normalize()
@@ -321,9 +370,21 @@ class MyStrategy:
         targetPoint = get_next_waypoint(self.waypoints, me, world, game)
         lookAt = targetPoint
 
-        FIGHT_RANGE_FACTOR = 2.0
+        FIGHT_RANGE_FACTOR = 1.7
         LOW_HEALTH = 0.3
         HEALTH_DIST_FACTOR = me.cast_range
+
+        # check me in center
+        CENTER_DIST = 500 
+        CENTER_POINTS = (Vector(1000, 1000), Vector(3000, 3000))
+        point, dist = get_nearest_and_dist(me, CENTER_POINTS)
+        if dist < CENTER_DIST:
+            # in center!
+            lane = get_lane(me, game)
+            targetPoint = get_lane_center_point(lane)
+            lookAt = targetPoint
+            FIGHT_RANGE_FACTOR = 1.0
+        
 
         # crate check
         CRATE_TICK = 2500
@@ -337,7 +398,7 @@ class MyStrategy:
                 lookAt = targetPoint
                 FIGHT_RANGE_FACTOR = 1.0
             else:
-                crate, dist = get_nearest_future_crate_and_dist(me)
+                crate, dist = get_nearest_and_dist(me, CRATE_POINTS)
                 next_crate_tick = (world.tick_index // CRATE_TICK + 1) * CRATE_TICK
                 if next_crate_tick < world.tick_count:
                     reach_dist = (next_crate_tick - world.tick_index) * game.wizard_forward_speed
@@ -347,13 +408,23 @@ class MyStrategy:
                         FIGHT_RANGE_FACTOR = 1.0
 
         # fight                        
-        nearest_target = get_nearest_target(me, world)
+        nearest_target = get_nearest_target(me, world, targetPoint)
         if nearest_target is not None:
             distance = me.get_distance_to_unit(nearest_target)
             if distance < me.cast_range * FIGHT_RANGE_FACTOR:
                 lookAt = Vector(nearest_target.x, nearest_target.y)
                 cooldown = me.remaining_cooldown_ticks_by_action[ActionType.MAGIC_MISSILE]
                 health = me.life / me.max_life
+
+                # check collide
+                obstacle = False
+                for target, _ in get_targets(world):
+                    if target.faction == me.faction:
+                        target_pos = Vector(target.x, target.y)
+                        if is_segment_circle_intersect(mePoint, lookAt, target_pos, target.radius):
+                            obstacle = True
+                            break
+
                 healthFactor = LOW_HEALTH * HEALTH_DIST_FACTOR / health if health < LOW_HEALTH else -2 * game.wizard_forward_speed
                 desired_distance = me.cast_range + game.wizard_forward_speed * cooldown + healthFactor
                 dirToTarget = (lookAt - mePoint).normalize()
@@ -362,6 +433,13 @@ class MyStrategy:
                 else:
                     targetPoint = get_next_waypoint(self.waypoints[::-1], me, world, game)
                     
+                if obstacle:
+                    sign = 1.0 if world.tick_index % 200 < 100 else -1.0
+                    strafe_vec = dirToTarget.rotate(math.pi * 90 * sign)
+                    targetPoint = mePoint + ((targetPoint - mePoint).normalize() + strafe_vec).normalize()
+
+                move.min_cast_distance = distance
+
                 if distance <= me.cast_range:
                     move.action = ActionType.MAGIC_MISSILE
 

@@ -13,8 +13,8 @@ class Runner:
             self.remote_process_client = RemoteProcessClient(sys.argv[1], int(sys.argv[2]))
             self.token = sys.argv[3]
         else:
-            dir = cwd=os.path.join(os.getcwd(), "local-runner-ru")
-            self.runner = Popen([os.path.join(dir, "local-runner.bat")], cwd=dir)
+            runner_dir = cwd=os.path.join(os.getcwd(), "local-runner-ru")
+            self.runner = Popen([os.path.join(runner_dir, "local-runner.bat")], cwd=runner_dir)
             self.remote_process_client = RemoteProcessClient("127.0.0.1", 31001)
             self.token = "0000000000000000"
 
