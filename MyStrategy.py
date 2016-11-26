@@ -150,7 +150,7 @@ class Vector(object):
 BUILDING_DISTANCE_FACTOR = 1.0
 WIZARD_DISTANCE_FACTOR = 0.7
 MINION_DISTANCE_FACTOR = 1.0
-CRATE_POINTS = (Vector(1200, 1200), Vector(2800, 2800))
+CRATE_POINTS = (Vector(1202, 1202), Vector(2798, 2798))
 
 def closest_point_on_seg(a : Vector, b : Vector, pt : Vector):
     seg_v = b - a
