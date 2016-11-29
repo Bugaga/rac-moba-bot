@@ -11,6 +11,8 @@ from model.World import World
 from model.LaneType import LaneType
 from model.Bonus import Bonus
 from model.BonusType import BonusType
+from model.SkillType import SkillType
+from model.StatusType import StatusType
 from model.Tree import Tree
 
 WAYPOINT_RADIUS = 100.00
@@ -150,7 +152,7 @@ class Vector(object):
 BUILDING_DISTANCE_FACTOR = 1.0
 WIZARD_DISTANCE_FACTOR = 0.7
 MINION_DISTANCE_FACTOR = 1.0
-CRATE_POINTS = (Vector(1202, 1202), Vector(2798, 2798))
+CRATE_POINTS = (Vector(1150, 1150), Vector(2850, 2850))
 
 def closest_point_on_seg(a : Vector, b : Vector, pt : Vector):
     seg_v = b - a
@@ -226,6 +228,32 @@ def get_nearest_world_crate_and_dist(me: Wizard, world: World):
             nearest_target_distance = distance
     return nearest_target, nearest_target_distance
 
+def get_desired_distance(regular_distance, me: Wizard, world: World, game: Game):
+    LOW_HEALTH = 0.3
+    HEALTH_DIST_FACTOR = me.cast_range
+    health = me.life / me.max_life
+    if health < LOW_HEALTH:
+        return regular_distance + LOW_HEALTH * HEALTH_DIST_FACTOR / health
+    else:
+        DIST = me.cast_range * 1.5
+        enemies_advantage = 0
+        for w in world.wizards:
+            if me.get_distance_to_unit(w) < DIST:
+                enemies_advantage += 1 if w.faction != me.faction else -1
+        for c in world.buildings:
+            if me.get_distance_to_unit(c) < DIST:
+                enemies_advantage += 1 if c.faction != me.faction else -1
+
+        if enemies_advantage > 0 or health < 0.55:
+            return regular_distance
+        elif enemies_advantage < 0:
+            return min(regular_distance, 200) 
+        elif enemies_advantage == 0:
+            return min(regular_distance, 600 - 20) # xp range
+
+    return regular_distance
+            
+        
 
 def get_next_waypoint(waypoints, me: Wizard, world: World, game: Game):
     """
@@ -316,6 +344,34 @@ def lerp_clamped(a : float, b : float, t : float):
 def clamp(x : float, v0 : float, v1 : float):
     return max(min(x, v1), v0)
 
+LEARN_ORDER = (
+    SkillType.MAGICAL_DAMAGE_BONUS_PASSIVE_1,
+    SkillType.MAGICAL_DAMAGE_BONUS_AURA_1,
+    SkillType.MAGICAL_DAMAGE_BONUS_PASSIVE_2,
+    SkillType.MAGICAL_DAMAGE_BONUS_AURA_2,
+    SkillType.RANGE_BONUS_PASSIVE_1,
+    SkillType.RANGE_BONUS_AURA_1,
+    SkillType.RANGE_BONUS_PASSIVE_2,
+    SkillType.RANGE_BONUS_AURA_2,
+    SkillType.ADVANCED_MAGIC_MISSILE,
+    SkillType.MAGICAL_DAMAGE_ABSORPTION_PASSIVE_1,
+    SkillType.MAGICAL_DAMAGE_ABSORPTION_AURA_1,
+    SkillType.MAGICAL_DAMAGE_ABSORPTION_PASSIVE_2,
+    SkillType.MAGICAL_DAMAGE_ABSORPTION_AURA_2,
+    SkillType.SHIELD,
+    SkillType.MOVEMENT_BONUS_FACTOR_PASSIVE_1,
+    SkillType.MOVEMENT_BONUS_FACTOR_AURA_1,
+    SkillType.MOVEMENT_BONUS_FACTOR_PASSIVE_2,
+    SkillType.MOVEMENT_BONUS_FACTOR_AURA_2,
+    SkillType.HASTE,
+    SkillType.FROST_BOLT,
+    SkillType.FIREBALL,
+    SkillType.STAFF_DAMAGE_BONUS_PASSIVE_1,
+    SkillType.STAFF_DAMAGE_BONUS_AURA_1,
+    SkillType.STAFF_DAMAGE_BONUS_PASSIVE_2,
+    SkillType.STAFF_DAMAGE_BONUS_AURA_2
+    )
+
 class MyStrategy:
 
     def __init__(self):
@@ -327,6 +383,12 @@ class MyStrategy:
         random.seed(game.random_seed)
         self.waypoints = get_waypoints(me, game)
         self.initialized = True
+
+    def select_skill(self, me: Wizard, move: Move):
+        l = min(me.level, len(LEARN_ORDER))
+        while l - 1 >= 0 and LEARN_ORDER[l - 1] not in me.skills:
+            l -= 1
+        move.skill_to_learn = LEARN_ORDER[l]
 
     def apply_move(self, target: Vector, lookAt: Vector, me: Wizard, world: World, game: Game, move: Move):
         lookAngle = me.get_angle_to(lookAt.x(), lookAt.y())
@@ -359,8 +421,9 @@ class MyStrategy:
                 moveDir = moveDir.normalize()
 
         moveAngle = me.get_angle_to(me.x + moveDir.x(), me.y + moveDir.y())
-        move.speed = math.cos(moveAngle) * game.wizard_forward_speed
-        move.strafe_speed = math.sin(moveAngle) * game.wizard_strafe_speed
+        max_speed_factor = 1.0 + 4.0 * game.movement_bonus_factor_per_skill_level + game.hastened_movement_bonus_factor
+        move.speed = math.cos(moveAngle) * game.wizard_forward_speed * max_speed_factor
+        move.strafe_speed = math.sin(moveAngle) * game.wizard_strafe_speed * max_speed_factor
 
     def move(self, me: Wizard, world: World, game: Game, move: Move):
         if not self.initialized:
@@ -371,8 +434,6 @@ class MyStrategy:
         lookAt = targetPoint
 
         FIGHT_RANGE_FACTOR = 1.7
-        LOW_HEALTH = 0.3
-        HEALTH_DIST_FACTOR = me.cast_range
 
         # check me in center
         CENTER_DIST = 500 
@@ -414,7 +475,6 @@ class MyStrategy:
             if distance < me.cast_range * FIGHT_RANGE_FACTOR:
                 lookAt = Vector(nearest_target.x, nearest_target.y)
                 cooldown = me.remaining_cooldown_ticks_by_action[ActionType.MAGIC_MISSILE]
-                health = me.life / me.max_life
 
                 # check collide
                 obstacle = False
@@ -425,8 +485,8 @@ class MyStrategy:
                             obstacle = True
                             break
 
-                healthFactor = LOW_HEALTH * HEALTH_DIST_FACTOR / health if health < LOW_HEALTH else -2 * game.wizard_forward_speed
-                desired_distance = me.cast_range + game.wizard_forward_speed * cooldown + healthFactor
+                regular_distance = me.cast_range + game.wizard_forward_speed * cooldown -  2 * game.wizard_forward_speed
+                desired_distance = get_desired_distance(regular_distance, me, world, game)
                 dirToTarget = (lookAt - mePoint).normalize()
                 if distance > desired_distance:
                     targetPoint = mePoint + dirToTarget
@@ -440,7 +500,21 @@ class MyStrategy:
 
                 move.min_cast_distance = max(0, distance - 50.0) if obstacle else 0.0 #50 to be sure, because things move
 
-                if distance <= me.cast_range:
+                angle = me.get_angle_to_unit(nearest_target)
+                if abs(angle) < math.pi / 12.0 and distance <= me.cast_range and cooldown <= 0:
                     move.action = ActionType.MAGIC_MISSILE
+                    move.cast_angle = angle
+                else:
+                    # try skills
+                    staff_cooldown = me.remaining_cooldown_ticks_by_action[ActionType.STAFF]
+                    if abs(angle) < game.staff_sector * 0.5 and distance < game.staff_range and staff_cooldown <= 0:
+                        move.action = ActionType.STAFF
+                    elif not StatusType.HASTENED in me.statuses and SkillType.HASTE in me.skills and me.mana > me.max_mana * 0.6:
+                        move.action = ActionType.HASTE
+                        move.status_target_id = me.id
+                    elif not StatusType.SHIELDED in me.statuses and SkillType.SHIELD in me.skills and me.mana > me.max_mana * 0.2:
+                        move.action = ActionType.SHIELD
+                        move.status_target_id = me.id
 
         self.apply_move(targetPoint, lookAt, me, world, game, move)
+        self.select_skill(me, move)
